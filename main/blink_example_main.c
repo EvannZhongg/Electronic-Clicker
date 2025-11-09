@@ -50,7 +50,7 @@ static volatile bool g_counter_updated = false;
 static TaskHandle_t g_main_task_handle = NULL;
 // 用于BLE连接
 static uint16_t g_ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-static bool g_notify_enabled = false;
+
 // GPIO1持续低电平计时（用于5秒清零检测）
 static volatile TickType_t g_zero_press_start_tick = 0;
 #define ZERO_PRESS_DURATION_MS 5000  // 5秒
@@ -328,13 +328,9 @@ static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
     
     // 客户端写入 CCCD (启用/禁用 Notify)
     if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
-        uint16_t cccd_val;
-        if (ble_hs_mbuf_to_flat(ctxt->om, &cccd_val, sizeof(cccd_val), NULL) != 0) {
-            return BLE_ATT_ERR_UNLIKELY;
-        }
-        g_notify_enabled = (cccd_val == 0x0001); // 0x0001 = Notify enabled
-        ESP_LOGI(TAG, "Notify %s", g_notify_enabled ? "Enabled" : "Disabled");
+        ESP_LOGW(TAG, "客户端尝试写入计数值，此操作未实现");
     }
+
     return 0;
 }
 
@@ -358,11 +354,13 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
 
 // BLE 通知任务
 void ble_notify_counter(void) {
-    if (g_notify_enabled && g_ble_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+    // 协议栈会自动检查谁订阅了通知。我们只需要检查连接句柄是否有效。
+    if (g_ble_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
         // 修正：创建 g_counter 的本地副本以移除 volatile 限定符
         uint32_t count_copy = g_counter;
         struct os_mbuf *om = ble_hs_mbuf_from_flat(&count_copy, sizeof(count_copy));
         if (om) {
+            // NimBLE 会自动只发送给已订阅此特征的客户端
             ble_gatts_notify_custom(g_ble_conn_handle, g_counter_val_handle, om);
         }
     }
@@ -375,12 +373,10 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_CONNECT:
         ESP_LOGI(TAG, "BLE Connected");
         g_ble_conn_handle = event->connect.conn_handle;
-        g_notify_enabled = false;
         break;
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "BLE Disconnected");
         g_ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-        g_notify_enabled = false;
         
         // 修正：调用我们自己的函数来重启广播，而不是错误的 ble_gap_adv_start
         start_ble_advertising();
